@@ -1,7 +1,7 @@
-from burp import IBurpExtender, IHttpListener, ITab, IMessageEditorController, IHttpRequestResponse
+from burp import IBurpExtender, IHttpListener, ITab, IMessageEditorController, IHttpRequestResponse, IHttpService
 from javax.swing import JFrame, JPanel, JTable, JScrollPane, JTextArea, table, BoxLayout, JTabbedPane, JSplitPane
 from java.awt import BorderLayout, Color, Dimension
-from java.awt.event import MouseAdapter
+from java.awt.event import MouseAdapter, KeyEvent, KeyAdapter
 
 
 class MyMouseListener(MouseAdapter):
@@ -13,11 +13,21 @@ class MyMouseListener(MouseAdapter):
         row = self.table.getSelectedRow()
         if row != -1:
             # Perform the desired action when the user clicks on a row
-            print("User clicked on row", row)
             self.extender._requestViewer.setMessage(self.extender.data_requests[row], True)
             self.extender._responseViewer.setMessage(self.extender.data_responses[row], False)
 
-class BurpExtender(IBurpExtender, IHttpListener, ITab, IMessageEditorController):
+class MyKeyListener(KeyAdapter):
+    def __init__(self, table, extender):
+        self.table = table
+        self.extender = extender
+
+    def keyPressed(self, e):
+        row = self.table.getSelectedRow()
+        if row != -1 and e.getKeyCode() == KeyEvent.VK_UP or e.getKeyCode() == KeyEvent.VK_DOWN:
+            self.extender._requestViewer.setMessage(self.extender.data_requests[row], True)
+            self.extender._responseViewer.setMessage(self.extender.data_responses[row], False)
+
+class BurpExtender(IBurpExtender, IHttpListener, ITab, IMessageEditorController, IHttpService, IHttpRequestResponse):
     
     def __init__(self):
         self.data = []
@@ -29,10 +39,11 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab, IMessageEditorController)
         self.modified_cookie_header = []
         self.textArea = []
         self.splitpane = JSplitPane(JSplitPane.VERTICAL_SPLIT)
-        self.splitpane.setPreferredSize(Dimension(325,350))
+        self.splitpane.setPreferredSize(Dimension(800,450))
         self.myTable = JTable()
         self._requestViewer = any
         self._responseViewer = any
+        self.editor_panel = JPanel(BorderLayout())
 
     def getTabCaption(self):
         return "Cookie Monsta"
@@ -44,7 +55,7 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab, IMessageEditorController)
             # Tabel UI
             panel_table = JPanel()
             panel_table.setLayout(BoxLayout(panel_table, BoxLayout.Y_AXIS))
-            head = ['ID', 'Method', 'URL', 'Cookie' ,'XSS']
+            head = ['ID', 'Method', 'URL', 'XSS']
             self.tableModel = table.DefaultTableModel(self.data, head)
             
             self.myTable.setModel(self.tableModel) 
@@ -55,10 +66,10 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab, IMessageEditorController)
             self.myTable.columnModel.getColumn(0).preferredWidth = 10
             self.myTable.columnModel.getColumn(1).preferredWidth = 10
             self.myTable.columnModel.getColumn(2).preferredWidth = 550
-            self.myTable.columnModel.getColumn(3).preferredWidth = 450
-            self.myTable.columnModel.getColumn(4).preferredWidth = 50
+            self.myTable.columnModel.getColumn(3).preferredWidth = 50
 
             self.myTable.addMouseListener(MyMouseListener(self.myTable, self))
+            self.myTable.addKeyListener(MyKeyListener(self.myTable, self))
 
             # Sidebar UI - TextArea to add cookies
             panel_sidebar = JPanel()
@@ -76,13 +87,12 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab, IMessageEditorController)
         return panel
     
     def updateTable(self):
-        self.tableModel.setDataVector(self.data, ['ID', 'Method', 'URL', 'Cookie' ,'XSS'])
+        self.tableModel.setDataVector(self.data, ['ID', 'Method', 'URL' ,'XSS'])
         self.myTable.autoResizeMode = JTable.AUTO_RESIZE_ALL_COLUMNS
         self.myTable.columnModel.getColumn(0).preferredWidth = 10
         self.myTable.columnModel.getColumn(1).preferredWidth = 10
-        self.myTable.columnModel.getColumn(2).preferredWidth = 550
-        self.myTable.columnModel.getColumn(3).preferredWidth = 450
-        self.myTable.columnModel.getColumn(4).preferredWidth = 50
+        self.myTable.columnModel.getColumn(2).preferredWidth = 750
+        self.myTable.columnModel.getColumn(3).preferredWidth = 50
     
     def registerExtenderCallbacks(self, callbacks):
         self._callbacks = callbacks
@@ -97,7 +107,9 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab, IMessageEditorController)
         tabs = JTabbedPane()
         tabs.addTab("Request", self._requestViewer.getComponent())
         tabs.addTab("Response", self._responseViewer.getComponent())
-        self.splitpane.setRightComponent(tabs)
+        self.editor_panel.add(tabs)
+        self.splitpane.setLeftComponent(self.editor_panel)
+
 
     def processHttpMessage(self, toolFlag, messageIsRequest, messageInfo):
         # Check if message received is a request or response
@@ -147,13 +159,14 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab, IMessageEditorController)
                 modified_request = self._helpers.buildHttpMessage(modified_headers, request[request_data.getBodyOffset():])
                 new_request = self._callbacks.makeHttpRequest(messageInfo.getHttpService(), modified_request)
                 new_request_data = self._helpers.analyzeRequest(new_request)
-                
+            except Exception as err:
+                print("HERE" + str(err))
 
                 url = new_request_data.getUrl()
 
                 # Check if the URL is within the current scope
-                # if not self._callbacks.isInScope(url):
-                #     return
+                if not self._callbacks.isInScope(url):
+                    return
 
                 # Get the response to the new request
                 response = new_request.getResponse()
@@ -172,22 +185,21 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab, IMessageEditorController)
                     elif "xxxx4<" in self._helpers.bytesToString(response_body):
                         reflected.append("<")
                     
-                    self.data.append([self.id, new_request_data.getMethod(), new_request_data.getUrl(), self.modified_cookie_header, reflected]) # DEBUG
-                    self.id = self.id + 1 # DEBUG
-                    self.data_requests.append(modified_request) # DEBUG
-                    self.data_responses.append(response) # DEBUG
-                    print(self.data)
+                    # self.data.append([self.id, new_request_data.getMethod(), new_request_data.getUrl(), reflected]) # DEBUG
+                    # self.id = self.id + 1 # DEBUG
+                    # self.data_requests.append(modified_request) # DEBUG
+                    # self.data_responses.append(response) # DEBUG
+                    # print(self.data)
                     if(reflected):
-                        self.data.append([self.id, new_request_data.getMethod(), new_request_data.getUrl(), self.modified_cookie_header, reflected])
-                        self.id = self.id + 1
-                        self.data_requests.append(new_request_data)
-                        self.data_responses.append(response_data)
+                        self.data.append([self.id, new_request_data.getMethod(), new_request_data.getUrl(), reflected]) 
+                        self.id = self.id + 1 
+                        self.data_requests.append(modified_request) 
+                        self.data_responses.append(response) 
 
-                    # Update the JTable after updating the data
-                    self.updateTable()
+                        # Update the JTable after updating the data
+                        self.updateTable()
                     
                 else:
                     print("No response body")
-            except:
-                pass
+            
             
